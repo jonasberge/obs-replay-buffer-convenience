@@ -1,5 +1,7 @@
 # OBS Replay Buffer Auto-Enable
 
+**WORK IN PROGRESS**
+
 Automatically enables the replay buffer when certain applications are launched.
 The list of applications is configured in `replay-buffer-autoenable-config.json`.
 
