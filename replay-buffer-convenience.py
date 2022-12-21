@@ -4,7 +4,8 @@
 # - playsound
 
 # TODO
-# - Warning, when fullscreen application/game is not captured (black screen)
+# - Warning, when fullscreen application/game is not captured (black screen) - is that possible?
+# - When the user disables the replay buffer manually, it shouldn't be automatically enabled again
 
 import os
 from collections import OrderedDict
@@ -140,11 +141,11 @@ def script_unload(settings):
 
 def on_event(event):
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
-        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/front-end-feedback/replay_start.mp3'))
+        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/replay-buffer-convenience/replay_start.mp3'))
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
-        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/front-end-feedback/replay_stop.mp3'))
+        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/replay-buffer-convenience/replay_stop.mp3'))
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED:
-        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/front-end-feedback/replay_saved.mp3'))
+        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/replay-buffer-convenience/replay_saved.mp3'))
 
 def play_audiofile(path):
     thread = threading.Thread(target=playsound, args=(path,))
