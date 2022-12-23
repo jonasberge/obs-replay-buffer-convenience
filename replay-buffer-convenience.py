@@ -1,7 +1,6 @@
 # Requires Python 3.6 for OBS (restriction by OBS itself).
-# Also requires the following Python packages to be installed globally:
-# - psutil
-# - playsound
+# Does not need any packages installed globally, as the path is modified below
+# and the required packages are copied and installed to the OBS scripts folder.
 
 # TODO
 # - Warning, when fullscreen application/game is not captured (black screen) - is that possible?
@@ -11,10 +10,23 @@ import os
 from collections import OrderedDict
 import threading
 import time
+import sys
+import wave
+
+import obspython as obs
+
+# Relative root directory of the script in the OBS folder
+SCRIPT_ROOT_REL = '../../data/obs-plugins/frontend-tools/scripts'
+
+SCRIPT_NAME = 'replay-buffer-convenience'
+SCRIPT_FILES_DIR = os.path.join(SCRIPT_ROOT_REL, SCRIPT_NAME)
+SCRIPT_LOCAL_PKGDIR = os.path.join(SCRIPT_FILES_DIR, 'python-packages')
+
+# Add the local package directory to the PYTHONPATH for below package dependencies.
+sys.path.append(os.path.abspath(SCRIPT_LOCAL_PKGDIR))
 
 import psutil
-from playsound import playsound
-import obspython as obs
+import pyaudio
 
 SCRIPT_PROPS = None
 SCRIPT_SETTINGS = None
@@ -124,10 +136,18 @@ def background_worker():
             break
     SCRIPT_WORKER_THREAD_CANCEL = False
 
+AUDIO_PLAYERS = dict()
+AUDIO_FILES = {
+    'start': os.path.join(SCRIPT_FILES_DIR, 'replay_start.wav'),
+    'saved': os.path.join(SCRIPT_FILES_DIR, 'replay_saved.wav'),
+    'stop': os.path.join(SCRIPT_FILES_DIR, 'replay_stop.wav'),
+}
+
 def script_load(settings):
     obs.obs_frontend_add_event_callback(on_event)
     global SCRIPT_SETTINGS
     set_script_settings(settings)
+    create_audio_players()
     worker = threading.Thread(target=background_worker, args=())
     worker.setDaemon(True)
     global SCRIPT_WORKER_THREAD_CANCEL
@@ -138,16 +158,73 @@ def script_unload(settings):
     obs.obs_frontend_remove_event_callback(on_event)
     global SCRIPT_WORKER_THREAD_CANCEL
     SCRIPT_WORKER_THREAD_CANCEL = True
+    destroy_audio_players()
+
+def create_audio_players():
+    global AUDIO_FILES
+    global AUDIO_PLAYERS
+    pyaudio_instance = pyaudio.PyAudio()
+    for name, filename in AUDIO_FILES.items():
+        player = AudioPlayer(filename, pyaudio_instance)
+        AUDIO_PLAYERS[name] = player
+        player.open()
+
+def destroy_audio_players():
+    global AUDIO_PLAYERS
+    for player in AUDIO_PLAYERS.values():
+        player.close()
+    AUDIO_PLAYERS = dict()
 
 def on_event(event):
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
-        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/replay-buffer-convenience/replay_start.mp3'))
+        play_voiceline('start')
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
-        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/replay-buffer-convenience/replay_stop.mp3'))
+        play_voiceline('stop')
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED:
-        play_audiofile(os.path.abspath('../../data/obs-plugins/frontend-tools/scripts/replay-buffer-convenience/replay_saved.mp3'))
+        play_voiceline('saved')
 
-def play_audiofile(path):
-    thread = threading.Thread(target=playsound, args=(path,))
+def play_voiceline(audio_player_name):
+    global AUDIO_PLAYERS
+    audio_player = AUDIO_PLAYERS[audio_player_name]
+    thread = threading.Thread(target=lambda: audio_player.play())
     thread.setDaemon(True)
     thread.start()
+
+class AudioPlayer:
+    DEFAULT_CHUNKSIZE = 1024
+
+    def __init__(self, wav_filename, pyaudio_instance = pyaudio.PyAudio(), chunksize = DEFAULT_CHUNKSIZE):
+        self._source_filename = wav_filename
+        self._pyaudio = pyaudio_instance
+        self._sampwidth = None
+        self._nchannels = None
+        self._framerate = None
+        self._chunks = []
+        self._chunksize = chunksize
+    
+    def open(self):
+        self._read_file()
+    
+    def _read_file(self):
+        wf = wave.open(self._source_filename, 'rb')
+        self._sampwidth = wf.getsampwidth()
+        self._nchannels = wf.getnchannels()
+        self._framerate = wf.getframerate()
+        data = wf.readframes(self._chunksize)
+        while len(data):
+            self._chunks.append(data)
+            data = wf.readframes(self._chunksize)
+    
+    def play(self):
+        p = self._pyaudio
+        stream = p.open(format=p.get_format_from_width(self._sampwidth),
+            channels=self._nchannels,
+            rate=self._framerate,
+            output=True)
+        for chunk in self._chunks:
+            stream.write(chunk)
+        stream.stop_stream()
+        stream.close()
+    
+    def close(self):
+        self._pyaudio.terminate()
