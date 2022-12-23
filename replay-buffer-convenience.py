@@ -4,7 +4,8 @@
 
 # TODO
 # - Warning, when fullscreen application/game is not captured (black screen) - is that possible?
-# - When the user disables the replay buffer manually, it shouldn't be automatically enabled again
+# - Option: Start replay buffer on startup (always on, no automation)
+# - Option: Remember last replay buffer state
 
 import os
 from collections import OrderedDict
@@ -81,7 +82,7 @@ def script_properties():
     obs.obs_properties_add_bool(props, "enable_automation", "Enable automation")
     obs.obs_properties_add_bool(props, "enable_voice_start", "Voice on replay buffer start")
     obs.obs_properties_add_bool(props, "enable_voice_stop", "Voice on replay buffer stop")
-    obs.obs_properties_add_bool(props, "enable_voice_save", "Voice on replay buffer save")
+    obs.obs_properties_add_bool(props, "enable_voice_saved", "Voice on replay buffer save")
     prop = obs.obs_properties_add_int_slider(props, "check_frequency_sec", "Check frequency (seconds)", 1, 30, 1)
     obs.obs_property_set_long_description(prop, "Sets how frequently the script checks if one of the configured applications is running. A lower value will check more frequently, but that uses more system resources. A good rule of thumb is to set it to the time it takes from starting the game to the point at which events occur that you want to be clipped, e.g. 10 seconds.")
     obs.obs_properties_add_path(props, "application_path", "Application path", obs.OBS_PATH_FILE, "*.exe", "/")
@@ -108,13 +109,61 @@ def is_any_executable_running(paths):
             pass
     return False
 
+# Error threshold in microseconds
+REPBUF_ERROR_THRESHOLD_T_US = 2500
+
+LAST_REPBUF_EVENT_T_US = None
+LAST_REPBUF_AUTOACTION_T_US = None
+LAST_EXECUTABLE_STATE = None
+LAST_EXECUTABLE_STATE_CHANGE_T_US = None
+
+def time_micros():
+    return time.time() * 1000 * 1000
+
 def check_replay_buffer(application_paths):
-    if is_any_executable_running(application_paths):
-        if not obs.obs_frontend_replay_buffer_active():
-            obs.obs_frontend_replay_buffer_start()
-    else:
-        if obs.obs_frontend_replay_buffer_active():
-            obs.obs_frontend_replay_buffer_stop()
+    is_on = obs.obs_frontend_replay_buffer_active()
+    is_exe_running = is_any_executable_running(application_paths)
+    should_enable = is_exe_running and not is_on
+    should_disable = not is_exe_running and is_on
+
+    global LAST_REPBUF_AUTOACTION_T_US
+
+    has_user_action = False
+    if LAST_REPBUF_EVENT_T_US is not None:
+        if LAST_REPBUF_AUTOACTION_T_US is None:
+            # We haven't yet made an automatic action, but the state has been changed.
+            # It must have been a user action.
+            has_user_action = True
+        elif abs(LAST_REPBUF_EVENT_T_US - LAST_REPBUF_AUTOACTION_T_US) > REPBUF_ERROR_THRESHOLD_T_US:
+            # The last replay buffer event was not caused by an automatic action,
+            # so it must have been a user action.
+            if LAST_REPBUF_EVENT_T_US > LAST_REPBUF_AUTOACTION_T_US:
+                # The last event should have happened after the last auto action.
+                has_user_action = True
+
+    global LAST_EXECUTABLE_STATE
+    global LAST_EXECUTABLE_STATE_CHANGE_T_US
+    if LAST_EXECUTABLE_STATE is None or LAST_EXECUTABLE_STATE != is_exe_running:
+        LAST_EXECUTABLE_STATE_CHANGE_T_US = time_micros()
+    LAST_EXECUTABLE_STATE = is_exe_running
+
+    if has_user_action and LAST_REPBUF_EVENT_T_US > LAST_EXECUTABLE_STATE_CHANGE_T_US:
+        # There is a user action and the user's action time is after the last time
+        # the state of any executables running changed.
+        # We want to automatically change the replay buffer state if said state changes,
+        # despite any user action.
+        # In other words, the user action sticks until the executable running state changes.
+        if not is_on and should_enable or is_on and should_disable:
+            # In this case we would work against the user action, so cancel.
+            return
+
+    if should_enable:
+        obs.obs_frontend_replay_buffer_start()
+        LAST_REPBUF_AUTOACTION_T_US = time_micros()
+    
+    if should_disable:
+        obs.obs_frontend_replay_buffer_stop()
+        LAST_REPBUF_AUTOACTION_T_US = time_micros()
 
 def background_worker():
     global SCRIPT_WORKER_THREAD_RELOAD
@@ -154,7 +203,7 @@ def script_load(settings):
     SCRIPT_WORKER_THREAD_CANCEL = False
     worker.start()
 
-def script_unload(settings):
+def script_unload():
     obs.obs_frontend_remove_event_callback(on_event)
     global SCRIPT_WORKER_THREAD_CANCEL
     SCRIPT_WORKER_THREAD_CANCEL = True
@@ -176,12 +225,21 @@ def destroy_audio_players():
     AUDIO_PLAYERS = dict()
 
 def on_event(event):
+    global LAST_REPBUF_EVENT_T_US
+    if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTING:
+        LAST_REPBUF_EVENT_T_US = time_micros()
+    if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPING:
+        LAST_REPBUF_EVENT_T_US = time_micros()
+
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
-        play_voiceline('start')
+        if obs.obs_data_get_bool(SCRIPT_SETTINGS, "enable_voice_start"):
+            play_voiceline('start')
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
-        play_voiceline('stop')
+        if obs.obs_data_get_bool(SCRIPT_SETTINGS, "enable_voice_stop"):
+            play_voiceline('stop')
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED:
-        play_voiceline('saved')
+        if obs.obs_data_get_bool(SCRIPT_SETTINGS, "enable_voice_saved"):
+            play_voiceline('saved')
 
 def play_voiceline(audio_player_name):
     global AUDIO_PLAYERS
